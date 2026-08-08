@@ -1,0 +1,240 @@
+openapi: "3.1.0"
+info:
+  title: PINFORGE API
+  version: "1.0.0"
+  description: |
+    A minimal Express API that mints one-time 4-digit PIN credentials and
+    verifies user attempts against them. Every generated PIN is a disposable
+    secret: verifying a PIN destroys it, so each credential can only ever be
+    redeemed once.
+
+    Four digits. 9,000 possible combinations (1000–9999). Zero trace.
+  contact:
+    name: PINFORGE
+  license:
+    name: MIT
+
+servers:
+  - url: https://api.pinforge.example
+    description: Production Express server (base URL when running `npm start`)
+
+tags:
+  - name: pins
+    description: Mint and verify one-time 4-digit PIN credentials
+
+paths:
+  /api/pins:
+    post:
+      operationId: generatePin
+      summary: Mint a new 4-digit PIN
+      description: |
+        Generates a cryptographically random 4-digit PIN (range 1000–9999)
+        using `crypto.getRandomValues` and returns it together with a short
+        hex credential id. The PIN is stored in-memory until it is verified,
+        at which point it is destroyed.
+      tags: [pins]
+      requestBody:
+        description: Optional generation parameters
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                length:
+                  type: integer
+                  description: Number of digits in the PIN (fixed at 4)
+                  default: 4
+                  minimum: 4
+                  maximum: 4
+              additionalProperties: false
+      responses:
+        "201":
+          description: A new PIN credential was minted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinResponse"
+              example:
+                id: "a3f1c8e20d44"
+                pin: "7382"
+                createdAt: "2026-08-08T09:00:00.000Z"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/pins/{id}:
+    get:
+      operationId: getPinStatus
+      summary: Check a credential's status
+      description: |
+        Returns the credential metadata without revealing the PIN itself.
+        Shows whether the credential is still live or has been consumed.
+      tags: [pins]
+      parameters:
+        - $ref: "#/components/parameters/PinId"
+      responses:
+        "200":
+          description: Credential metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinStatus"
+        "404":
+          description: Unknown credential id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/pins/{id}/verify:
+    post:
+      operationId: verifyPin
+      summary: Verify an attempt against a PIN
+      description: |
+        Tests a 4-digit attempt against the minted PIN. A successful match
+        destroys the credential (one-time use). Failed attempts leave the
+        credential live but are counted.
+      tags: [pins]
+      parameters:
+        - $ref: "#/components/parameters/PinId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+            example:
+              attempt: "7382"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+              example:
+                valid: true
+                consumed: true
+                attemptsUsed: 1
+        "400":
+          description: Malformed attempt (not exactly 4 digits)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown credential id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Liveness probe
+      description: Returns `{"status":"ok"}` when the server is running.
+      tags: [pins]
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                required: [status]
+
+components:
+  parameters:
+    PinId:
+      name: id
+      in: path
+      required: true
+      description: Credential id returned by `POST /api/pins`
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{12}$"
+        example: "a3f1c8e20d44"
+
+  schemas:
+    PinResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Short hex credential id
+          example: "a3f1c8e20d44"
+        pin:
+          type: string
+          description: The minted 4-digit PIN
+          pattern: "^[0-9]{4}$"
+          example: "7382"
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO timestamp of minting
+          example: "2026-08-08T09:00:00.000Z"
+      required: [id, pin, createdAt]
+
+    PinStatus:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "a3f1c8e20d44"
+        live:
+          type: boolean
+          description: True while the PIN has not been verified
+        createdAt:
+          type: string
+          format: date-time
+        destroyedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set once the PIN is successfully verified
+        attemptsUsed:
+          type: integer
+          description: Number of verification attempts so far
+      required: [id, live, createdAt, attemptsUsed]
+
+    VerifyRequest:
+      type: object
+      properties:
+        attempt:
+          type: string
+          description: The 4-digit guess, zero-padded
+          pattern: "^[0-9]{4}$"
+          example: "7382"
+      required: [attempt]
+      additionalProperties: false
+
+    VerifyResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          description: Whether the attempt matched the PIN
+        consumed:
+          type: boolean
+          description: True if the credential was already redeemed
+        attemptsUsed:
+          type: integer
+          description: Total verification attempts including this one
+      required: [valid, consumed, attemptsUsed]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Unknown credential id"
+      required: [error]
